@@ -3,7 +3,6 @@ package jsonparser
 import (
 	"bytes"
 	"fmt"
-	_ "fmt"
 	"reflect"
 	"testing"
 )
@@ -12,7 +11,7 @@ import (
 var activeTest = ""
 
 func toArray(data []byte) (result [][]byte) {
-	ArrayEach(data, func(value []byte, dataType ValueType, offset int, err error) {
+	ArrayEach(data, func(value []byte, dataType ValueType, offset int, err *error) {
 		result = append(result, value)
 	})
 
@@ -20,7 +19,7 @@ func toArray(data []byte) (result [][]byte) {
 }
 
 func toStringArray(data []byte) (result []string) {
-	ArrayEach(data, func(value []byte, dataType ValueType, offset int, err error) {
+	ArrayEach(data, func(value []byte, dataType ValueType, offset int, err *error) {
 		result = append(result, string(value))
 	})
 
@@ -226,6 +225,24 @@ var deleteTests = []DeleteTest{
 		json: `   {"test":"input"}`,
 		path: []string{"test"},
 		data: `   {}`,
+	},
+	{
+		desc: "Malformed JSON - panic on negative slice index (GO-2026-4514)",
+		json: `{"0":"0":`,
+		path: []string{"0"},
+		data: `{"0":"0":`,
+	},
+	{
+		desc: "Malformed JSON - truncated object",
+		json: `{"a":  `,
+		path: []string{"a"},
+		data: `{"a":  `,
+	},
+	{
+		desc: "Malformed JSON - truncated nested object",
+		json: `{"a":{"b":  `,
+		path: []string{"a", "b"},
+		data: `{"a":{"b":  `,
 	},
 }
 
@@ -1406,7 +1423,7 @@ func TestArrayEach(t *testing.T) {
 	mock := []byte(`{"a": { "b":[{"x": 1} ,{"x":2},{ "x":3}, {"x":4} ]}}`)
 	count := 0
 
-	ArrayEach(mock, func(value []byte, dataType ValueType, offset int, err error) {
+	ArrayEach(mock, func(value []byte, dataType ValueType, offset int, err *error) {
 		count++
 
 		switch count {
@@ -1435,8 +1452,8 @@ func TestArrayEach(t *testing.T) {
 func TestArrayEachWithWhiteSpace(t *testing.T) {
 	// Issue #159
 	count := 0
-	funcError := func([]byte, ValueType, int, error) { t.Errorf("Run func not allow") }
-	funcSuccess := func(value []byte, dataType ValueType, index int, err error) {
+	funcError := func([]byte, ValueType, int, *error) { t.Errorf("Run func not allow") }
+	funcSuccess := func(value []byte, dataType ValueType, index int, err *error) {
 		count++
 
 		switch count {
@@ -1459,7 +1476,7 @@ func TestArrayEachWithWhiteSpace(t *testing.T) {
 
 	type args struct {
 		data []byte
-		cb   func(value []byte, dataType ValueType, offset int, err error)
+		cb   func(value []byte, dataType ValueType, offset int, err *error)
 		keys []string
 	}
 	tests := []struct {
@@ -1483,11 +1500,11 @@ func TestArrayEachWithWhiteSpace(t *testing.T) {
 }
 
 func TestArrayEachEmpty(t *testing.T) {
-	funcError := func([]byte, ValueType, int, error) { t.Errorf("Run func not allow") }
+	funcError := func([]byte, ValueType, int, *error) { t.Errorf("Run func not allow") }
 
 	type args struct {
 		data []byte
-		cb   func(value []byte, dataType ValueType, offset int, err error)
+		cb   func(value []byte, dataType ValueType, offset int, err *error)
 		keys []string
 	}
 	tests := []struct {
@@ -1699,8 +1716,9 @@ var testJson = []byte(`{
 			"b":2
 		}
 	], 
-	"arrInt": [1,2,3,4], 
-	"intPtr": 10, 
+	"arrInt": [1,2,3,4],
+	"arrString": ["a","b","c"],
+	"intPtr": 10,
 	"a\n":{
 		"b\n":99
 	}
@@ -1718,9 +1736,10 @@ func TestEachKey(t *testing.T) {
 		{"arrInt", "[3]"},
 		{"arrInt", "[5]"}, // Should not find last key
 		{"nested"},
-		{"arr", "["},    // issue#177 Invalid arguments
-		{"a\n", "b\n"},  // issue#165
-		{"nested", "b"}, // Should find repeated key
+		{"arr", "["},      // issue#177 Invalid arguments
+		{"a\n", "b\n"},   // issue#165
+		{"nested", "b"},  // Should find repeated key
+		{"arrString", "[1]"},
 	}
 
 	keysFound := 0
@@ -1777,13 +1796,17 @@ func TestEachKey(t *testing.T) {
 			if string(value) != "2" {
 				t.Errorf("Should find 11 key")
 			}
+		case 13:
+			if string(value) != "b" {
+				t.Errorf("Should find arrString[1] = b, got %s", string(value))
+			}
 		default:
-			t.Errorf("Should find only 10 keys, got %v key", idx)
+			t.Errorf("Should find only 12 keys, got %v key", idx)
 		}
 	}, paths...)
 
-	if keysFound != 11 {
-		t.Errorf("Should find 11 keys: %d", keysFound)
+	if keysFound != 12 {
+		t.Errorf("Should find 12 keys: %d", keysFound)
 	}
 }
 
@@ -1976,4 +1999,17 @@ func TestParseString(t *testing.T) {
 			return obtained.(string) == expected, expected
 		},
 	)
+}
+
+func TestArrayEachEarlyTermination(t *testing.T) {
+	var count int
+	ArrayEach([]byte(`[1,2,3,4,5]`), func(value []byte, dataType ValueType, offset int, err *error) {
+		count++
+		if count == 2 {
+			*err = DoneError
+		}
+	})
+	if count != 2 {
+		t.Errorf("Expected iteration to stop after 2 elements, got %d", count)
+	}
 }

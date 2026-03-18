@@ -1,7 +1,7 @@
 package benchmark
 
 import (
-	"github.com/buger/jsonparser"
+	"github.com/securityguy/jsonparser"
 	"strconv"
 	"testing"
 )

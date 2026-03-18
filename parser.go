@@ -19,6 +19,7 @@ var (
 	OverflowIntegerError       = errors.New("Value is number, but overflowed while parsing")
 	MalformedStringEscapeError = errors.New("Encountered an invalid escape sequence in a string")
 	NullValueError             = errors.New("Value is null")
+	DoneError                  = errors.New("Done. Reached End of Iterator")
 )
 
 // How much stack space to allocate for unescaping JSON strings; if a string longer
@@ -324,7 +325,7 @@ func searchKeys(data []byte, keys ...string) int {
 				var valueFound []byte
 				var valueOffset int
 				curI := i
-				ArrayEach(data[i:], func(value []byte, dataType ValueType, offset int, err error) {
+				ArrayEach(data[i:], func(value []byte, dataType ValueType, offset int, err *error) {
 					if curIdx == aIdx {
 						valueFound = value
 						valueOffset = offset
@@ -526,7 +527,7 @@ func EachKey(data []byte, cb func(int, []byte, ValueType, error), paths ...[]str
 				level++
 
 				var curIdx int
-				arrOff, _ := ArrayEach(data[i:], func(value []byte, dataType ValueType, offset int, err error) {
+				arrOff, _ := ArrayEach(data[i:], func(value []byte, dataType ValueType, offset int, err *error) {
 					if _, ok = arrIdxFlags[curIdx]; ok {
 						for pi, p := range paths {
 							if pIdxFlags[pi] {
@@ -539,8 +540,12 @@ func EachKey(data []byte, cb func(int, []byte, ValueType, error), paths ...[]str
 									pathFlags[pi] = true
 
 									if of != -1 {
-										v, dt, _, e := Get(value[of:])
-										cb(pi, v, dt, e)
+										if dataType == String {
+											cb(pi, value[of:], dataType, nil)
+										} else {
+											v, dt, _, e := Get(value[of:])
+											cb(pi, v, dt, e)
+										}
 									}
 								}
 							}
@@ -707,14 +712,22 @@ func WriteToBuffer(buffer []byte, str string) int {
 }
 
 /*
-
-Del - Receives existing data structure, path to delete.
-
-Returns:
-`data` - return modified data
-
+Delete - Receives existing data structure, path to delete.
+Returns `data` - return modified data on new slice
 */
 func Delete(data []byte, keys ...string) []byte {
+	return delete(false, data, keys...)
+}
+
+/*
+DeleteOnOrig - Receives existing data structure, path to delete.
+Returns `data` - return modified data on original slice
+*/
+func DeleteOnOrig(data []byte, keys ...string) []byte {
+	return delete(true, data, keys...)
+}
+
+func delete(inPlace bool, data []byte, keys ...string) []byte {
 	lk := len(keys)
 	if lk == 0 {
 		return data[:0]
@@ -731,7 +744,7 @@ func Delete(data []byte, keys ...string) []byte {
 	if !array {
 		if len(keys) > 1 {
 			_, _, startOffset, endOffset, err = internalGet(data, keys[:lk-1]...)
-			if err == KeyPathNotFoundError {
+			if err != nil {
 				// problem parsing the data
 				return data
 			}
@@ -743,11 +756,17 @@ func Delete(data []byte, keys ...string) []byte {
 			return data
 		}
 		keyOffset += startOffset
-		_, _, _, subEndOffset, _ := internalGet(data[startOffset:endOffset], keys[lk-1])
+		_, _, _, subEndOffset, err := internalGet(data[startOffset:endOffset], keys[lk-1])
+		if err != nil {
+			return data
+		}
 		endOffset = startOffset + subEndOffset
 		tokEnd := tokenEnd(data[endOffset:])
 		tokStart := findTokenStart(data[:keyOffset], ","[0])
 
+		if endOffset+tokEnd >= len(data) {
+			return data
+		}
 		if data[endOffset+tokEnd] == ","[0] {
 			endOffset += tokEnd + 1
 		} else if data[endOffset+tokEnd] == " "[0] && len(data) > endOffset+tokEnd+1 && data[endOffset+tokEnd+1] == ","[0] {
@@ -757,7 +776,7 @@ func Delete(data []byte, keys ...string) []byte {
 		}
 	} else {
 		_, _, keyOffset, endOffset, err = internalGet(data, keys...)
-		if err == KeyPathNotFoundError {
+		if err != nil {
 			// problem parsing the data
 			return data
 		}
@@ -783,11 +802,15 @@ func Delete(data []byte, keys ...string) []byte {
 		newOffset = prevTok + 1
 	}
 
-	// We have to make a copy here if we don't want to mangle the original data, because byte slices are
-	// accessed by reference and not by value
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy, data)
-	data = append(dataCopy[:newOffset], dataCopy[endOffset:]...)
+	if inPlace {
+		data = append(data[:newOffset], data[endOffset:]...)
+	} else {
+		// We have to make a copy here if we don't want to mangle the original data, because byte slices are
+		// accessed by reference and not by value
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+		data = append(dataCopy[:newOffset], dataCopy[endOffset:]...)
+	}
 
 	return data
 }
@@ -985,7 +1008,7 @@ func internalGet(data []byte, keys ...string) (value []byte, dataType ValueType,
 }
 
 // ArrayEach is used when iterating arrays, accepts a callback function with the same return arguments as `Get`.
-func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int, err error), keys ...string) (offset int, err error) {
+func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int, err *error), keys ...string) (offset int, err error) {
 	if len(data) == 0 {
 		return -1, MalformedObjectError
 	}
@@ -1040,11 +1063,10 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 		}
 
 		if t != NotExist {
-			cb(v, t, offset+o-len(v), e)
-		}
-
-		if e != nil {
-			break
+			cb(v, t, offset+o-len(v), &e)
+			if e != nil {
+				return offset, e
+			}
 		}
 
 		offset += o
@@ -1067,6 +1089,87 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 	}
 
 	return offset, nil
+}
+
+// ArrayIterator returns a next() closure that yields successive elements of a JSON array.
+// Each call to next() returns (value, dataType, offset, err).
+// When the array is exhausted, next() returns (nil, NotExist, 0, DoneError).
+// On malformed input, next() returns an appropriate error.
+func ArrayIterator(data []byte, keys ...string) (next func() ([]byte, ValueType, int, error), err error) {
+	if len(data) == 0 {
+		return nil, MalformedObjectError
+	}
+
+	offset := 0
+
+	if len(keys) > 0 {
+		if offset = searchKeys(data, keys...); offset == -1 {
+			return nil, KeyPathNotFoundError
+		}
+
+		nO := nextToken(data[offset:])
+		if nO == -1 {
+			return nil, MalformedJsonError
+		}
+		offset += nO
+
+		if data[offset] != '[' {
+			return nil, MalformedArrayError
+		}
+		offset++
+	} else {
+		nT := nextToken(data)
+		if nT == -1 {
+			return nil, MalformedJsonError
+		}
+		offset = nT + 1
+	}
+
+	nO := nextToken(data[offset:])
+	if nO == -1 {
+		return nil, MalformedJsonError
+	}
+	offset += nO
+
+	if data[offset] == ']' {
+		return func() ([]byte, ValueType, int, error) {
+			return nil, NotExist, 0, DoneError
+		}, nil
+	}
+
+	isFirst := true
+	return func() (value []byte, dataType ValueType, retOffset int, retErr error) {
+		if !isFirst {
+			skipToToken := nextToken(data[offset:])
+			if skipToToken == -1 {
+				return nil, NotExist, 0, MalformedArrayError
+			}
+			offset += skipToToken
+
+			if data[offset] == ']' {
+				return nil, NotExist, 0, DoneError
+			}
+
+			if data[offset] != ',' {
+				return nil, NotExist, 0, MalformedArrayError
+			}
+			offset++
+		}
+		isFirst = false
+
+		v, t, o, e := Get(data[offset:])
+		if e != nil {
+			return nil, NotExist, 0, e
+		}
+		if o == 0 {
+			return nil, NotExist, 0, DoneError
+		}
+
+		retOffset = offset + o - len(v)
+		offset += o
+
+		return v, t, retOffset, nil
+	}, nil
 }
 
 // ObjectEach iterates over the key-value pairs of a JSON object, invoking a given callback for each such entry
@@ -1311,4 +1414,241 @@ func ParseInt(b []byte) (int64, error) {
 	} else {
 		return v, nil
 	}
+}
+
+// getRawValue returns the raw bytes of a JSON value starting at offset, including delimiters.
+func getRawValue(data []byte, offset int) ([]byte, int, error) {
+	nO := nextToken(data[offset:])
+	if nO == -1 {
+		return nil, offset, MalformedJsonError
+	}
+	offset += nO
+
+	_, _, endOffset, err := getType(data, offset)
+	if err != nil {
+		return nil, offset, err
+	}
+
+	return data[offset:endOffset], endOffset, nil
+}
+
+// internalRawGet finds the next token and returns its raw bytes.
+func internalRawGet(data []byte) ([]byte, error) {
+	nO := nextToken(data)
+	if nO == -1 {
+		return nil, MalformedJsonError
+	}
+	raw, _, err := getRawValue(data, nO)
+	return raw, err
+}
+
+// GetRaw returns the raw JSON bytes for the value at the given key path.
+// Unlike Get, string values include their surrounding quotes.
+func GetRaw(data []byte, keys ...string) (value []byte, offset int, err error) {
+	if len(keys) > 0 {
+		if offset = searchKeys(data, keys...); offset == -1 {
+			return nil, -1, KeyPathNotFoundError
+		}
+	}
+
+	nO := nextToken(data[offset:])
+	if nO == -1 {
+		return nil, offset, MalformedJsonError
+	}
+	offset += nO
+
+	_, endOffset, err := getRawValue(data, offset)
+	if err != nil {
+		return nil, offset, err
+	}
+
+	return data[offset:endOffset], endOffset, nil
+}
+
+// EachRawKey is like EachKey but delivers raw JSON bytes to the callback instead of parsed values.
+// The callback receives: path index, raw JSON bytes (including delimiters), and any error.
+func EachRawKey(data []byte, cb func(int, []byte, error), paths ...[]string) int {
+	var x struct{}
+	var level, pathsMatched, i int
+	ln := len(data)
+
+	pathFlags := make([]bool, stackArraySize)[:]
+	if len(paths) > cap(pathFlags) {
+		pathFlags = make([]bool, len(paths))[:]
+	}
+	pathFlags = pathFlags[0:len(paths)]
+
+	var maxPath int
+	for _, p := range paths {
+		if len(p) > maxPath {
+			maxPath = len(p)
+		}
+	}
+
+	pathsBuf := make([]string, stackArraySize)[:]
+	if maxPath > cap(pathsBuf) {
+		pathsBuf = make([]string, maxPath)[:]
+	}
+	pathsBuf = pathsBuf[0:maxPath]
+
+	for i < ln {
+		switch data[i] {
+		case '"':
+			i++
+			keyBegin := i
+
+			strEnd, keyEscaped := stringEnd(data[i:])
+			if strEnd == -1 {
+				return -1
+			}
+			i += strEnd
+
+			keyEnd := i - 1
+
+			valueOffset := nextToken(data[i:])
+			if valueOffset == -1 {
+				return -1
+			}
+
+			i += valueOffset
+
+			if data[i] == ':' {
+				match := -1
+				key := data[keyBegin:keyEnd]
+
+				var keyUnesc []byte
+				if !keyEscaped {
+					keyUnesc = key
+				} else {
+					var stackbuf [unescapeStackBufSize]byte
+					if ku, err := Unescape(key, stackbuf[:]); err != nil {
+						return -1
+					} else {
+						keyUnesc = ku
+					}
+				}
+
+				if maxPath >= level {
+					if level < 1 {
+						cb(-1, nil, MalformedJsonError)
+						return -1
+					}
+
+					pathsBuf[level-1] = bytesToString(&keyUnesc)
+					for pi, p := range paths {
+						if len(p) != level || pathFlags[pi] || !equalStr(&keyUnesc, p[level-1]) || !sameTree(p, pathsBuf[:level]) {
+							continue
+						}
+
+						match = pi
+
+						pathsMatched++
+						pathFlags[pi] = true
+
+						raw, _, e := getRawValue(data, i+1)
+						cb(pi, raw, e)
+
+						if pathsMatched == len(paths) {
+							break
+						}
+					}
+					if pathsMatched == len(paths) {
+						return i
+					}
+				}
+
+				if match == -1 {
+					tokenOffset := nextToken(data[i+1:])
+					i += tokenOffset
+
+					if data[i] == '{' {
+						blockSkip := blockEnd(data[i:], '{', '}')
+						i += blockSkip + 1
+					}
+				}
+
+				if i < ln {
+					switch data[i] {
+					case '{', '}', '[', '"':
+						i--
+					}
+				}
+			} else {
+				i--
+			}
+		case '{':
+			level++
+		case '}':
+			level--
+		case '[':
+			var ok bool
+			arrIdxFlags := make(map[int]struct{})
+
+			pIdxFlags := make([]bool, stackArraySize)[:]
+			if len(paths) > cap(pIdxFlags) {
+				pIdxFlags = make([]bool, len(paths))[:]
+			}
+			pIdxFlags = pIdxFlags[0:len(paths)]
+
+			if level < 0 {
+				cb(-1, nil, MalformedJsonError)
+				return -1
+			}
+
+			for pi, p := range paths {
+				if len(p) < level+1 || pathFlags[pi] || p[level][0] != '[' || !sameTree(p, pathsBuf[:level]) {
+					continue
+				}
+				if len(p[level]) >= 2 {
+					aIdx, _ := strconv.Atoi(p[level][1 : len(p[level])-1])
+					arrIdxFlags[aIdx] = x
+					pIdxFlags[pi] = true
+				}
+			}
+
+			if len(arrIdxFlags) > 0 {
+				level++
+
+				var curIdx int
+				ArrayEach(data[i:], func(value []byte, dataType ValueType, offset int, err *error) {
+					if _, ok = arrIdxFlags[curIdx]; ok {
+						for pi, p := range paths {
+							if pIdxFlags[pi] {
+								aIdx, _ := strconv.Atoi(p[level-1][1 : len(p[level-1])-1])
+
+								if curIdx == aIdx {
+									of := searchKeys(value, p[level:]...)
+
+									pathsMatched++
+									pathFlags[pi] = true
+
+									if of != -1 {
+										raw, _, e := getRawValue(value, of)
+										cb(pi, raw, e)
+									}
+								}
+							}
+						}
+					}
+					curIdx++
+				})
+
+				if pathsMatched == len(paths) {
+					return i
+				}
+			} else {
+				if arraySkip := blockEnd(data[i:], '[', ']'); arraySkip == -1 {
+					return -1
+				} else {
+					i += arraySkip - 1
+				}
+			}
+		case ']':
+			level--
+		}
+
+		i++
+	}
+
+	return -1
 }
