@@ -18,6 +18,10 @@ The following pull requests from the upstream repo have been merged into this fo
 | [#254](https://github.com/buger/jsonparser/pull/254) | **New API:** `ArrayIterator` — lazy closure-based array iteration |
 | [#250](https://github.com/buger/jsonparser/pull/250) | **New API:** `GetRaw` and `EachRawKey` — raw JSON byte extraction without type parsing |
 
+---
+
+# Original information from buger/jsonparser:
+
 It does not require you to know the structure of the payload (eg. create structs), and allows accessing fields by providing the path to them. It is up to **10 times faster** than standard `encoding/json` package (depending on payload size and usage), **allocates no memory**. See benchmarks below.
 
 ## Rationale
