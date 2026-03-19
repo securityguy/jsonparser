@@ -1,5 +1,5 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/securityguy/jsonparser)](https://goreportcard.com/report/github.com/securityguy/jsonparser) ![License](https://img.shields.io/dub/l/vibe-d.svg)
-# Alternative JSON parser for Go (10x times faster standard library)
+# Alternative JSON parser for Go
 
 **This library is a fork of [buger/jsonparser](https://github.com/buger/jsonparser), maintained at github.com/securityguy/jsonparser.**
 
