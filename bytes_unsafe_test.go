@@ -28,8 +28,9 @@ func bytesEqualStrUnsafeSlower(abytes *[]byte, bstr string) bool {
 	shdr := (*reflect.StringHeader)(unsafe.Pointer(&s))
 	shdr.Data = aslicehdr.Data
 	shdr.Len = aslicehdr.Len
+	result := s == bstr
 	runtime.KeepAlive(abytes)
-	return s == bstr
+	return result
 }
 
 func TestEqual(t *testing.T) {
