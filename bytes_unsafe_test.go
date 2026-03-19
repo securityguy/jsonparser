@@ -5,6 +5,7 @@ package jsonparser
 
 import (
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"unsafe"
@@ -23,8 +24,12 @@ func bytesEqualStrSafe(abytes []byte, bstr string) bool {
 
 func bytesEqualStrUnsafeSlower(abytes *[]byte, bstr string) bool {
 	aslicehdr := (*reflect.SliceHeader)(unsafe.Pointer(abytes))
-	astrhdr := reflect.StringHeader{Data: aslicehdr.Data, Len: aslicehdr.Len}
-	return *(*string)(unsafe.Pointer(&astrhdr)) == bstr
+	var s string
+	shdr := (*reflect.StringHeader)(unsafe.Pointer(&s))
+	shdr.Data = aslicehdr.Data
+	shdr.Len = aslicehdr.Len
+	runtime.KeepAlive(abytes)
+	return s == bstr
 }
 
 func TestEqual(t *testing.T) {
