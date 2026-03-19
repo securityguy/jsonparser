@@ -2013,3 +2013,452 @@ func TestArrayEachEarlyTermination(t *testing.T) {
 		t.Errorf("Expected iteration to stop after 2 elements, got %d", count)
 	}
 }
+
+// --- DeleteOnOrig ---
+
+func TestDeleteOnOrigMatchesDelete(t *testing.T) {
+	// DeleteOnOrig should produce identical output to Delete for every existing test case.
+	for _, test := range deleteTests {
+		result := DeleteOnOrig([]byte(test.json), test.path...)
+		if string(result) != test.data {
+			t.Errorf("DeleteOnOrig(%q, %v): expected %q, got %q",
+				test.json, test.path, test.data, string(result))
+		}
+	}
+}
+
+func TestDeleteOnOrigUsesOriginalBackingArray(t *testing.T) {
+	// DeleteOnOrig must operate in-place; the result must share the original backing array.
+	data := []byte(`{"a": 1, "b": 2}`)
+	originalPtr := &data[0]
+
+	result := DeleteOnOrig(data, "a")
+
+	if string(result) != `{ "b": 2}` {
+		t.Errorf("expected `{ \"b\": 2}`, got %q", string(result))
+	}
+	if len(result) == 0 {
+		t.Fatal("result is empty, cannot check backing array")
+	}
+	if &result[0] != originalPtr {
+		t.Error("DeleteOnOrig returned a copy; expected it to modify the original backing array")
+	}
+}
+
+func TestDeleteDoesNotUseOriginalBackingArray(t *testing.T) {
+	// Delete must NOT touch the original backing array (it should copy first).
+	data := []byte(`{"a": 1, "b": 2}`)
+	originalPtr := &data[0]
+
+	result := Delete(data, "a")
+
+	if string(result) != `{ "b": 2}` {
+		t.Errorf("expected `{ \"b\": 2}`, got %q", string(result))
+	}
+	if len(result) > 0 && &result[0] == originalPtr {
+		t.Error("Delete shares the original backing array; expected an independent copy")
+	}
+}
+
+// --- ArrayIterator ---
+
+func TestArrayIteratorBasic(t *testing.T) {
+	// Verify values, types, and that DoneError is returned after the last element.
+	next, err := ArrayIterator([]byte(`[1, "two", true, null]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []struct {
+		val string
+		dt  ValueType
+	}{
+		{"1", Number},
+		{"two", String}, // quotes are stripped, same as ArrayEach / Get
+		{"true", Boolean},
+		{"null", Null},
+	}
+
+	for i, want := range expected {
+		v, dt, _, err := next()
+		if err != nil {
+			t.Fatalf("element %d: unexpected error %v", i, err)
+		}
+		if string(v) != want.val {
+			t.Errorf("element %d value: expected %q, got %q", i, want.val, string(v))
+		}
+		if dt != want.dt {
+			t.Errorf("element %d type: expected %v, got %v", i, want.dt, dt)
+		}
+	}
+
+	_, _, _, err = next()
+	if err != DoneError {
+		t.Errorf("expected DoneError after exhaustion, got %v", err)
+	}
+}
+
+func TestArrayIteratorEmptyArray(t *testing.T) {
+	next, err := ArrayIterator([]byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = next()
+	if err != DoneError {
+		t.Errorf("expected DoneError for empty array, got %v", err)
+	}
+}
+
+func TestArrayIteratorDoneErrorIsStable(t *testing.T) {
+	// Calling next() repeatedly after exhaustion must keep returning DoneError, not panic.
+	next, err := ArrayIterator([]byte(`[42]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next() // consume the one element
+	for i := 0; i < 3; i++ {
+		_, _, _, err = next()
+		if err != DoneError {
+			t.Errorf("call %d after exhaustion: expected DoneError, got %v", i+1, err)
+		}
+	}
+}
+
+func TestArrayIteratorViaKey(t *testing.T) {
+	next, err := ArrayIterator([]byte(`{"nums": [10, 20, 30]}`), "nums")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for {
+		v, _, _, err := next()
+		if err == DoneError {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, string(v))
+	}
+
+	want := []string{"10", "20", "30"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+}
+
+func TestArrayIteratorKeyNotFound(t *testing.T) {
+	_, err := ArrayIterator([]byte(`{"arr": [1, 2]}`), "missing")
+	if err != KeyPathNotFoundError {
+		t.Errorf("expected KeyPathNotFoundError, got %v", err)
+	}
+}
+
+func TestArrayIteratorNonArrayValue(t *testing.T) {
+	_, err := ArrayIterator([]byte(`{"x": "not-an-array"}`), "x")
+	if err != MalformedArrayError {
+		t.Errorf("expected MalformedArrayError, got %v", err)
+	}
+}
+
+func TestArrayIteratorEmptyData(t *testing.T) {
+	_, err := ArrayIterator([]byte{})
+	if err != MalformedObjectError {
+		t.Errorf("expected MalformedObjectError, got %v", err)
+	}
+}
+
+func TestArrayIteratorMatchesArrayEach(t *testing.T) {
+	// ArrayIterator and ArrayEach must yield identical values and types.
+	data := []byte(`[1, "hello", true, null, {"a": 1}, [2, 3]]`)
+
+	var eachResults []struct {
+		val string
+		dt  ValueType
+	}
+	ArrayEach(data, func(value []byte, dataType ValueType, offset int, err *error) {
+		eachResults = append(eachResults, struct {
+			val string
+			dt  ValueType
+		}{string(value), dataType})
+	})
+
+	next, err := ArrayIterator(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var iterResults []struct {
+		val string
+		dt  ValueType
+	}
+	for {
+		v, dt, _, err := next()
+		if err == DoneError {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		iterResults = append(iterResults, struct {
+			val string
+			dt  ValueType
+		}{string(v), dt})
+	}
+
+	if !reflect.DeepEqual(eachResults, iterResults) {
+		t.Errorf("ArrayIterator and ArrayEach disagree:\nArrayEach: %v\nArrayIterator: %v", eachResults, iterResults)
+	}
+}
+
+// --- GetRaw ---
+
+func TestGetRaw(t *testing.T) {
+	tests := []struct {
+		desc     string
+		json     string
+		path     []string
+		expected string
+		isErr    bool
+	}{
+		{
+			desc:     "string value includes surrounding quotes",
+			json:     `{"a": "hello"}`,
+			path:     []string{"a"},
+			expected: `"hello"`,
+		},
+		{
+			desc:     "number value has no quotes",
+			json:     `{"a": 42}`,
+			path:     []string{"a"},
+			expected: `42`,
+		},
+		{
+			desc:     "float value",
+			json:     `{"a": 3.14}`,
+			path:     []string{"a"},
+			expected: `3.14`,
+		},
+		{
+			desc:     "boolean true",
+			json:     `{"a": true}`,
+			path:     []string{"a"},
+			expected: `true`,
+		},
+		{
+			desc:     "boolean false",
+			json:     `{"a": false}`,
+			path:     []string{"a"},
+			expected: `false`,
+		},
+		{
+			desc:     "null value",
+			json:     `{"a": null}`,
+			path:     []string{"a"},
+			expected: `null`,
+		},
+		{
+			desc:     "object value includes braces",
+			json:     `{"a": {"b": 1}}`,
+			path:     []string{"a"},
+			expected: `{"b": 1}`,
+		},
+		{
+			desc:     "array value includes brackets",
+			json:     `{"a": [1, 2, 3]}`,
+			path:     []string{"a"},
+			expected: `[1, 2, 3]`,
+		},
+		{
+			desc:     "nested path, string includes quotes",
+			json:     `{"a": {"b": "deep"}}`,
+			path:     []string{"a", "b"},
+			expected: `"deep"`,
+		},
+		{
+			desc:  "key not found returns error",
+			json:  `{"a": 1}`,
+			path:  []string{"missing"},
+			isErr: true,
+		},
+		{
+			desc:     "no keys returns raw whole value",
+			json:     `{"a": 1}`,
+			path:     []string{},
+			expected: `{"a": 1}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			v, _, err := GetRaw([]byte(tt.json), tt.path...)
+			if tt.isErr {
+				if err == nil {
+					t.Errorf("expected error, got nil (value=%q)", string(v))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if string(v) != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, string(v))
+			}
+		})
+	}
+}
+
+func TestGetRawVsGet(t *testing.T) {
+	// GetRaw and Get must agree on non-string types.
+	// For strings, GetRaw includes quotes while Get strips them.
+	data := []byte(`{"s": "hello", "n": 42, "b": true}`)
+
+	rawS, _, err := GetRaw(data, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	getS, _, _, err := Get(data, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// GetRaw string has quotes; Get string does not
+	if string(rawS) != `"hello"` {
+		t.Errorf("GetRaw string: expected %q, got %q", `"hello"`, string(rawS))
+	}
+	if string(getS) != `hello` {
+		t.Errorf("Get string: expected %q, got %q", `hello`, string(getS))
+	}
+	// Verify the relationship: rawS == `"` + getS + `"`
+	if !bytes.Equal(rawS[1:len(rawS)-1], getS) {
+		t.Errorf("GetRaw[1:-1] != Get: %q vs %q", rawS[1:len(rawS)-1], getS)
+	}
+
+	// For numbers, they should return the same bytes
+	rawN, _, err := GetRaw(data, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	getN, _, _, err := Get(data, "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rawN, getN) {
+		t.Errorf("GetRaw vs Get for number: %q vs %q", rawN, getN)
+	}
+}
+
+// --- EachRawKey ---
+
+func TestEachRawKey(t *testing.T) {
+	t.Run("string value includes quotes", func(t *testing.T) {
+		data := []byte(`{"name": "Alice", "age": 30}`)
+		results := make([]string, 2)
+
+		EachRawKey(data, func(idx int, raw []byte, err error) {
+			if err != nil {
+				t.Errorf("path %d: unexpected error %v", idx, err)
+				return
+			}
+			results[idx] = string(raw)
+		}, []string{"name"}, []string{"age"})
+
+		if results[0] != `"Alice"` {
+			t.Errorf(`name: expected `+"`"+`"Alice"`+"`"+`, got %q`, results[0])
+		}
+		if results[1] != `30` {
+			t.Errorf("age: expected `30`, got %q", results[1])
+		}
+	})
+
+	t.Run("all value types return correct raw bytes", func(t *testing.T) {
+		data := []byte(`{"s":"str","n":1,"f":1.5,"b":true,"z":null,"o":{"x":1},"a":[1,2]}`)
+		results := make([]string, 7)
+
+		EachRawKey(data, func(idx int, raw []byte, err error) {
+			if err == nil {
+				results[idx] = string(raw)
+			}
+		},
+			[]string{"s"},
+			[]string{"n"},
+			[]string{"f"},
+			[]string{"b"},
+			[]string{"z"},
+			[]string{"o"},
+			[]string{"a"},
+		)
+
+		cases := []struct{ idx int; want string }{
+			{0, `"str"`},
+			{1, `1`},
+			{2, `1.5`},
+			{3, `true`},
+			{4, `null`},
+			{5, `{"x":1}`},
+			{6, `[1,2]`},
+		}
+		for _, c := range cases {
+			if results[c.idx] != c.want {
+				t.Errorf("path %d: expected %q, got %q", c.idx, c.want, results[c.idx])
+			}
+		}
+	})
+
+	t.Run("callback not invoked for missing path", func(t *testing.T) {
+		data := []byte(`{"a": 1}`)
+		called := false
+
+		EachRawKey(data, func(idx int, raw []byte, err error) {
+			called = true
+		}, []string{"missing"})
+
+		if called {
+			t.Error("callback must not be called for a path that does not exist")
+		}
+	})
+
+	t.Run("EachRawKey and EachKey agree on non-string values", func(t *testing.T) {
+		data := []byte(`{"n": 42, "b": true, "z": null}`)
+
+		rawResults := make([]string, 3)
+		EachRawKey(data, func(idx int, raw []byte, err error) {
+			if err == nil {
+				rawResults[idx] = string(raw)
+			}
+		}, []string{"n"}, []string{"b"}, []string{"z"})
+
+		keyResults := make([]string, 3)
+		EachKey(data, func(idx int, val []byte, vt ValueType, err error) {
+			if err == nil {
+				keyResults[idx] = string(val)
+			}
+		}, []string{"n"}, []string{"b"}, []string{"z"})
+
+		if !reflect.DeepEqual(rawResults, keyResults) {
+			t.Errorf("EachRawKey and EachKey disagree on non-string values: %v vs %v", rawResults, keyResults)
+		}
+	})
+
+	t.Run("EachRawKey string includes quotes, EachKey does not", func(t *testing.T) {
+		data := []byte(`{"s": "world"}`)
+
+		var rawVal, keyVal string
+		EachRawKey(data, func(idx int, raw []byte, err error) {
+			rawVal = string(raw)
+		}, []string{"s"})
+		EachKey(data, func(idx int, val []byte, vt ValueType, err error) {
+			keyVal = string(val)
+		}, []string{"s"})
+
+		if rawVal != `"world"` {
+			t.Errorf("EachRawKey: expected %q, got %q", `"world"`, rawVal)
+		}
+		if keyVal != `world` {
+			t.Errorf("EachKey: expected %q, got %q", `world`, keyVal)
+		}
+		if rawVal[1:len(rawVal)-1] != keyVal {
+			t.Errorf("EachRawKey[1:-1] should equal EachKey value: %q vs %q", rawVal[1:len(rawVal)-1], keyVal)
+		}
+	})
+}
