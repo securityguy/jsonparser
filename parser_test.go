@@ -1736,9 +1736,9 @@ func TestEachKey(t *testing.T) {
 		{"arrInt", "[3]"},
 		{"arrInt", "[5]"}, // Should not find last key
 		{"nested"},
-		{"arr", "["},      // issue#177 Invalid arguments
-		{"a\n", "b\n"},   // issue#165
-		{"nested", "b"},  // Should find repeated key
+		{"arr", "["},    // issue#177 Invalid arguments
+		{"a\n", "b\n"},  // issue#165
+		{"nested", "b"}, // Should find repeated key
 		{"arrString", "[1]"},
 	}
 

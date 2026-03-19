@@ -7,10 +7,10 @@ import (
 )
 
 var testPaths = [][]string{
-	[]string{"test"},
-	[]string{"these"},
-	[]string{"keys"},
-	[]string{"please"},
+	{"test"},
+	{"these"},
+	{"keys"},
+	{"please"},
 }
 
 func testIter(data []byte) (err error) {
@@ -152,7 +152,7 @@ func TestLargeArray(t *testing.T) {
 		}
 	}
 	sb.WriteString(`]`)
-	keys := [][]string{[]string{`[1]`}}
+	keys := [][]string{{`[1]`}}
 
 	data := []byte(sb.String())
 	EachKey(data, func(offset int, value []byte, dt ValueType, err error) {
@@ -171,7 +171,7 @@ func TestArrayOutOfBounds(t *testing.T) {
 		}
 	}
 	sb.WriteString(`]`)
-	keys := [][]string{[]string{`[128]`}}
+	keys := [][]string{{`[128]`}}
 
 	data := []byte(sb.String())
 	EachKey(data, func(offset int, value []byte, dt ValueType, err error) {
