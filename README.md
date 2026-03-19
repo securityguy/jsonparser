@@ -3,6 +3,21 @@
 
 **This library is a fork of [buger/jsonparser](https://github.com/buger/jsonparser), maintained at github.com/securityguy/jsonparser.**
 
+### Changes from upstream
+
+The following pull requests from the upstream repo have been merged into this fork:
+
+| PR | Description |
+|----|-------------|
+| [#276](https://github.com/buger/jsonparser/pull/276) | **Security fix (GO-2026-4514):** `Delete` panicked on malformed JSON via negative slice index (DoS) |
+| [#180](https://github.com/buger/jsonparser/pull/180) | **Bug fix:** `EachKey` failed to extract values from arrays of strings |
+| [#268](https://github.com/buger/jsonparser/pull/268) | **Security fix:** Update Dockerfile base image from `golang:1.6` to `golang:1.21` |
+| [#263](https://github.com/buger/jsonparser/pull/263) | **Chore:** Remove duplicate import in test file |
+| [#134](https://github.com/buger/jsonparser/pull/134) | **Breaking API change:** `ArrayEach` callback now receives `*error`; set `*err` to stop iteration early. `DoneError` sentinel added. |
+| [#256](https://github.com/buger/jsonparser/pull/256) | **New API:** `DeleteOnOrig` — in-place deletion with no allocation |
+| [#254](https://github.com/buger/jsonparser/pull/254) | **New API:** `ArrayIterator` — lazy closure-based array iteration |
+| [#250](https://github.com/buger/jsonparser/pull/250) | **New API:** `GetRaw` and `EachRawKey` — raw JSON byte extraction without type parsing |
+
 It does not require you to know the structure of the payload (eg. create structs), and allows accessing fields by providing the path to them. It is up to **10 times faster** than standard `encoding/json` package (depending on payload size and usage), **allocates no memory**. See benchmarks below.
 
 ## Rationale
