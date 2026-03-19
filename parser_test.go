@@ -2389,7 +2389,10 @@ func TestEachRawKey(t *testing.T) {
 			[]string{"a"},
 		)
 
-		cases := []struct{ idx int; want string }{
+		cases := []struct {
+			idx  int
+			want string
+		}{
 			{0, `"str"`},
 			{1, `1`},
 			{2, `1.5`},
